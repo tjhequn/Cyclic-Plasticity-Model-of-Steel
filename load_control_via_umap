@@ -1,0 +1,167 @@
+C     user amplitude subroutine
+      Subroutine uamp(
+C          passed in for information and state variables
+     *     ampName, time, ampValueOld, dt, nProps, props, nSvars, svars,
+     *     lFlagsInfo, nSensor, sensorValues, sensorNames, 
+     *     jSensorLookUpTable, 
+C          to be defined
+     *     ampValueNew, 
+     *     lFlagsDefine,
+     *     AmpDerivative, AmpSecDerivative, AmpIncIntegral,
+     *     AmpIncDoubleIntegral)
+      
+      include 'aba_param.inc'
+
+C     svars - additional state variables, similar to (V)UEL
+      dimension sensorValues(nSensor), svars(nSvars), props(nProps)
+      character*80 sensorNames(nSensor)
+      character*80 ampName
+
+C     time indices
+      parameter (iStepTime        = 1,
+     *           iTotalTime       = 2,
+     *           nTime            = 2)
+C     flags passed in for information
+      parameter (iInitialization   = 1,
+     *           iRegularInc       = 2,
+     *           nFlagsInfo        = 2)
+C     optional flags to be defined
+      parameter (iComputeDeriv       = 1,
+     *           iComputeSecDeriv    = 2,
+     *           iComputeInteg       = 3,
+     *           iComputeDoubleInteg = 4,
+     *           iStopAnalysis       = 5,
+     *           iConcludeStep       = 6,
+     *           nFlagsDefine        = 6)
+
+      dimension time(nTime), lFlagsInfo(nFlagsInfo),
+     *          lFlagsDefine(nFlagsDefine)
+      dimension jSensorLookUpTable(*)      
+
+C     parameters for defining loading protocols
+      integer,parameter :: num_load_level   = 5,
+     *                     total_num_cycles = 5
+      parameter (gauge_length = 10.0,
+     *           K_ampl       = 3.0)
+
+      integer :: num_cycles_list(num_load_level)
+      real :: lower_strain_list(num_load_level), 
+     *        upper_strain_list(num_load_level), 
+     *        time_seq(2*total_num_cycles+2), 
+     *        nominal_strain_seq(2*total_num_cycles+2),
+     *        max_elongation_inc, elongation_gap, 
+     *        last_elongation, last_delta_U2, lower_U2, upper_U2
+
+C     define the target loading protocols, time_seq and nominal_strain_seq
+      data num_cycles_list /1,1,1,1,1/
+      data lower_strain_list /-0.01,-0.02,-0.03,-0.04,-0.05/
+      data upper_strain_list /0.01,0.02,0.03,0.04,0.05/
+
+      call generate_load_protocols(num_load_level, total_num_cycles,
+     *           num_cycles_list, lower_strain_list,upper_strain_list, 
+     *           time_seq, nominal_strain_seq)
+
+      num_iter = svars(1)
+
+      if (num_iter.eq.0) then
+
+        write(*,*) '-------------------The loading protocol is ------------------'
+        write(*,*) '      time   nominal-strain'
+10      format(' ', 2F12.6)
+        do i = 1,2*total_num_cycles+2
+
+          write(*,10) time_seq(i), nominal_strain_seq(i)
+
+        end do
+
+      end if
+
+      svars(1) = num_iter + 1
+
+
+C     get sensor values first
+      upper_U2 = GetSensorValue('UPPER_SENSOR_U2',jSensorLookUpTable,
+     *                           sensorValues)
+      lower_U2 = GetSensorValue('LOWER_SENSOR_U2',jSensorLookUpTable,
+     *                            sensorValues)
+
+C     calculate the current strain, target strain, and elongation gap
+      current_elongation = upper_U2 - lower_U2
+
+      current_step_time  = time(iStepTime)
+      remaining_step_time = int(current_step_time)+1-current_step_time+dt
+
+      target_strain_loc = int(current_step_time)+2
+      target_strain  = nominal_strain_seq(target_strain_loc)
+      last_target_strain = nominal_strain_seq(target_strain_loc+1)
+      target_elongation = target_strain*gauge_length
+
+      elongation_gap = target_elongation - current_elongation
+
+C the coressponding increment of loading displacement
+      
+
+      delta_U2 = dt*elongation_gap*K_ampl/remaining_step_time
+
+      if (ampName(1:11) .eq. 'UAMP_CYCLIC' ) then
+
+C        User code to compute  ampValue 
+ 
+            ampValueNew = ampValueOld + delta_U2
+
+      end if 
+
+      return
+      end
+
+
+C     This is the subroutine to generate the loading protocols regarding
+C     nominal strain
+      subroutine generate_load_protocols(num_load_level, 
+     *           total_num_cycles,num_cycles_list, lower_strain_list, 
+     *           upper_strain_list, time_seq, nominal_strain_seq)
+
+C     generate constant loading protocols
+            integer :: num_load_level, total_num_cycles, start_cycle,
+     *                 num_cycles_list(num_load_level),  end_cycle
+            real :: lower_strain_list(num_load_level), 
+     *              upper_strain_list(num_load_level), 
+     *              time_seq(2*total_num_cycles+2), 
+     *              nominal_strain_seq(2*total_num_cycles+2),
+     *              lower_strain_val, upper_strain_val
+
+            do i_level = 1,num_load_level
+
+              lower_strain_val = exp(lower_strain_list(i_level))-1.0d0
+              upper_strain_val = exp(upper_strain_list(i_level))-1.0d0
+
+              if (i_level.eq.1) then
+                start_cycle = 1
+
+              else
+                start_cycle = 1 + sum(num_cycles_list(1:i_level-1))
+
+              end if
+
+              end_cycle = start_cycle + num_cycles_list(i_level) - 1
+
+              do j_cycle = start_cycle,end_cycle
+
+                time_seq(2*j_cycle  ) = 2*j_cycle-1
+                time_seq(2*j_cycle+1) = 2*j_cycle
+                
+                nominal_strain_seq(2*j_cycle  ) = upper_strain_val
+                nominal_strain_seq(2*j_cycle+1) = lower_strain_val
+
+                end do
+
+            end do
+
+            time_seq(1) = 0.0
+            time_seq(2*total_num_cycles+2) = 2*total_num_cycles + 1
+
+            nominal_strain_seq(1) = 0.0
+            nominal_strain_seq(2*total_num_cycles+2) = 0.0
+
+      return     
+      end
